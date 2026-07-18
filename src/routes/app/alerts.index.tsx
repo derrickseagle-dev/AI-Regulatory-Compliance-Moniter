@@ -113,6 +113,8 @@ function AlertsPage() {
     return m[s] || "";
   };
 
+  const hasAnyFilter = Object.values(filters).some(v => v && v !== 1);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -204,17 +206,56 @@ function AlertsPage() {
 
       {/* Alert List */}
       {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <p className="text-gray-500">Loading alerts…</p>
+        <div className="overflow-hidden rounded-xl border border-gray-800">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-900/70 text-gray-400">
+              <tr>
+                <th className="px-4 py-3 w-10"><div className="h-4 w-4 rounded bg-gray-800" /></th>
+                <th className="px-4 py-3 text-left font-medium">Alert</th>
+                <th className="px-4 py-3 text-left font-medium">Severity</th>
+                <th className="px-4 py-3 text-left font-medium">Rule</th>
+                <th className="px-4 py-3 text-left font-medium">Status</th>
+                <th className="px-4 py-3 text-left font-medium">Created</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <tr key={i} className="animate-pulse">
+                  <td className="px-4 py-3"><div className="h-4 w-4 rounded bg-gray-800" /></td>
+                  <td className="px-4 py-3">
+                    <div className="h-4 w-48 rounded bg-gray-800 mb-1" />
+                    <div className="h-3 w-24 rounded bg-gray-800" />
+                  </td>
+                  <td className="px-4 py-3"><div className="h-5 w-16 rounded-full bg-gray-800" /></td>
+                  <td className="px-4 py-3"><div className="h-4 w-24 rounded bg-gray-800" /></td>
+                  <td className="px-4 py-3"><div className="h-5 w-20 rounded-full bg-gray-800" /></td>
+                  <td className="px-4 py-3"><div className="h-4 w-16 rounded bg-gray-800" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : alerts.length === 0 ? (
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-12 text-center">
-          <p className="text-gray-500">No alerts found.</p>
-          <p className="mt-1 text-sm text-gray-600">
-            {Object.values(filters).some(v => v)
-              ? "Try adjusting your filters."
-              : "Upload documents and run rules to generate alerts."}
+        <div className="rounded-xl border border-dashed border-gray-800 py-16 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
+            <AlertIcon />
+          </div>
+          <h3 className="mt-4 text-sm font-semibold text-white">
+            {hasAnyFilter ? "No alerts match your filters" : "No alerts yet"}
+          </h3>
+          <p className="mt-1 text-sm text-gray-500">
+            {hasAnyFilter
+              ? "Try adjusting your filters or clearing them."
+              : "Upload a document to get started — rules will automatically scan for compliance violations."}
           </p>
+          {!hasAnyFilter && (
+            <a
+              href="/app/documents"
+              className="mt-4 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+            >
+              <UploadIcon /> Upload a Document
+            </a>
+          )}
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-gray-800">
@@ -300,3 +341,6 @@ function AlertsPage() {
     </div>
   );
 }
+
+function AlertIcon() { return <svg className="h-6 w-6 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" /></svg>; }
+function UploadIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>; }

@@ -41,6 +41,9 @@ function DashboardHome() {
   const ruleHealth = stats?.ruleHealth || { pass: 0, fail: 0, warning: 0 };
   const healthTotal = ruleHealth.pass + ruleHealth.fail + ruleHealth.warning || 1;
 
+  // Usage stats
+  const usage = stats?.usage;
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-white">Dashboard</h1>
@@ -60,6 +63,66 @@ function DashboardHome() {
           </div>
         ))}
       </div>
+
+      {/* Usage Bar */}
+      {usage && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-white">Plan Usage</h2>
+            <span className="rounded-full bg-indigo-900/40 border border-indigo-700/50 px-3 py-0.5 text-xs font-medium text-indigo-400">{usage.tierLabel}</span>
+          </div>
+          <div className="space-y-4">
+            {/* Documents */}
+            <div>
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-400">Documents this month</span>
+                <span className="text-gray-300">
+                  {usage.documents.current}
+                  {usage.documents.limit > 0 ? ` / ${usage.documents.limit}` : " / ∞"}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-gray-800">
+                <div
+                  className={`h-2 rounded-full transition-all ${usage.documents.pct >= 90 ? "bg-red-500" : usage.documents.pct >= 70 ? "bg-amber-500" : "bg-indigo-500"}`}
+                  style={{ width: `${usage.documents.limit > 0 ? Math.min(usage.documents.pct, 100) : 0}%` }}
+                />
+              </div>
+            </div>
+            {/* Rules */}
+            <div>
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-400">Rules</span>
+                <span className="text-gray-300">
+                  {usage.rules.current}
+                  {usage.rules.limit > 0 ? ` / ${usage.rules.limit}` : " / ∞"}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-gray-800">
+                <div
+                  className={`h-2 rounded-full transition-all ${usage.rules.pct >= 90 ? "bg-red-500" : usage.rules.pct >= 70 ? "bg-amber-500" : "bg-indigo-500"}`}
+                  style={{ width: `${usage.rules.limit > 0 ? Math.min(usage.rules.pct, 100) : 0}%` }}
+                />
+              </div>
+            </div>
+            {/* Rule Sets */}
+            <div>
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-400">Rule Sets</span>
+                <span className="text-gray-300">
+                  {usage.ruleSets.current}
+                  {usage.ruleSets.limit > 0 ? ` / ${usage.ruleSets.limit}` : " / ∞"}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-gray-800">
+                <div
+                  className={`h-2 rounded-full transition-all ${usage.ruleSets.pct >= 90 ? "bg-red-500" : usage.ruleSets.pct >= 70 ? "bg-amber-500" : "bg-indigo-500"}`}
+                  style={{ width: `${usage.ruleSets.limit > 0 ? Math.min(usage.ruleSets.pct, 100) : 0}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Recent Alerts Widget */}
