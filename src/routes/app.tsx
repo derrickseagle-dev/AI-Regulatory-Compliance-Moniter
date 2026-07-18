@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
+import { FeedbackWidget } from "~/lib/feedback/FeedbackWidget";
 
 export const Route = createFileRoute("/app")({
   component: AppShell,
@@ -123,6 +124,7 @@ function AppShell() {
           )}
           <Outlet /></main>
       </div>
+      <FeedbackWidget />
     </div>
   );
 }

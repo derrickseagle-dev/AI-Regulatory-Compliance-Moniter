@@ -16,7 +16,8 @@ import { generateAlertsFromEvaluations, generateAlert, toFeedItem, transitionAle
 import { RULE_TEMPLATES } from "./src/lib/rules/templates";
 import { checkTierLimit, getUsageStats } from "./src/lib/tiers/index";
 import { generateDailyDigest } from "./src/lib/email/digest";
-import { sendDigestEmail } from "./src/lib/email/sender";
+import { sendDigestEmail, sendTransactionalEmail } from "./src/lib/email/sender";
+import { feedback } from "./src/lib/db/index";
 import { createCheckoutSession, verifyWebhookSignature, extractEventDetails, createBillingPortalSession } from "./src/lib/billing/index";
 import { z } from "zod";
 
@@ -676,9 +677,100 @@ async function handleOnboarding(req: Request): Promise<Response> {
     if (p.data.onboardingStep !== undefined) updates.onboardingStep = p.data.onboardingStep;
     if (p.data.onboardingCompleted !== undefined) updates.onboardingCompleted = p.data.onboardingCompleted;
     await db.update(users).set(updates).where(eq(users.id, user.id));
+
+    // Send welcome email when onboarding is completed for the first time
+    if (p.data.onboardingCompleted === true) {
+      const [tenant] = await db
+        .select({ name: tenants.name })
+        .from(tenants)
+        .where(eq(tenants.id, user.tenantId))
+        .limit(1);
+
+      const publicUrl = process.env.PUBLIC_URL || "https://regula.ai";
+
+      const welcomeHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="background:#0f172a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:0;">
+  <div style="max-width:560px;margin:0 auto;padding:40px 24px;">
+    <div style="text-align:center;margin-bottom:32px;">
+      <h1 style="color:#818cf8;font-size:26px;margin:0;">Welcome to Regula AI</h1>
+      <p style="color:#6b7280;margin:8px 0 0;">Continuous compliance monitoring for ${tenant?.name || "your organization"}</p>
+    </div>
+    <div style="background:#1e293b;border-radius:16px;padding:28px;margin-bottom:24px;">
+      <p style="margin:0 0 16px;color:#e5e7eb;font-size:15px;line-height:1.6;">
+        Hi${user.name ? ` ${user.name}` : ""},<br/><br/>
+        You're all set! Your Regula AI account is ready to monitor documents, enforce compliance rules,
+        and alert you when issues arise.
+      </p>
+      <p style="margin:0 0 24px;color:#9ca3af;font-size:14px;">Here are some quick links to get started:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:0;">
+        <a href="${publicUrl}/app/documents" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;">Upload Documents</a>
+        <a href="${publicUrl}/app/rules" style="display:inline-block;background:#374151;color:#e5e7eb;padding:10px 18px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;">Manage Rules</a>
+        <a href="${publicUrl}/app/alerts" style="display:inline-block;background:#374151;color:#e5e7eb;padding:10px 18px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;">View Alerts</a>
+      </div>
+    </div>
+    <div style="background:#1e293b;border-radius:16px;padding:24px;">
+      <p style="margin:0 0 8px;color:#e5e7eb;font-size:14px;font-weight:600;">Need help?</p>
+      <p style="margin:0;color:#9ca3af;font-size:13px;line-height:1.5;">
+        Check our <a href="${publicUrl}/docs" style="color:#818cf8;">documentation</a> or reply to this email.
+        We're here to help you stay audit-ready.
+      </p>
+    </div>
+    <p style="color:#4b5563;font-size:12px;text-align:center;margin-top:32px;">
+      Regula AI — Continuous compliance monitoring
+    </p>
+  </div>
+</body>
+</html>`;
+
+      const welcomeText = `Welcome to Regula AI!\n\nYou're all set! Your Regula AI account is ready to monitor documents, enforce compliance rules, and alert you when issues arise.\n\nQuick links:\n- Upload Documents: ${publicUrl}/app/documents\n- Manage Rules: ${publicUrl}/app/rules\n- View Alerts: ${publicUrl}/app/alerts\n\nNeed help? Check our docs at ${publicUrl}/docs or reply to this email.\n\n— Regula AI`;
+
+      // Fire-and-forget: don't block the response
+      sendTransactionalEmail(
+        user.email,
+        "Welcome to Regula AI",
+        welcomeHtml,
+        welcomeText,
+      ).catch(err => console.error("[Email] Welcome email failed:", err));
+    }
+
     const [updated] = await db.select({ onboardingCompleted: users.onboardingCompleted, onboardingStep: users.onboardingStep }).from(users).where(eq(users.id, user.id)).limit(1);
     return json({ onboardingCompleted: updated?.onboardingCompleted ?? false, onboardingStep: updated?.onboardingStep ?? 0 });
   } catch (err) { console.error("Onboarding:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Feedback Handler ───────────────────────────────────────────
+
+const feedbackSchema = z.object({
+  rating: z.number().int().min(1).max(5),
+  message: z.string().max(1000).optional(),
+  pageUrl: z.string().max(500).optional(),
+});
+
+async function handleFeedback(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const body = await req.json();
+    const p = feedbackSchema.safeParse(body);
+    if (!p.success) return errJson("VALIDATION_ERROR", "Invalid input", 400);
+    const db = getDb();
+    const [entry] = await db
+      .insert(feedback)
+      .values({
+        tenantId: user.tenantId,
+        userId: user.id,
+        rating: p.data.rating,
+        message: p.data.message || null,
+        pageUrl: p.data.pageUrl || null,
+      })
+      .returning();
+    return json({ id: entry.id, rating: entry.rating, createdAt: String(entry.createdAt) }, 201);
+  } catch (err) {
+    console.error("Feedback:", err);
+    return errJson("INTERNAL_ERROR", "Failed to save feedback.", 500);
+  }
 }
 
 // ── Preferences Handler ───────────────────────────────────────
@@ -960,6 +1052,7 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/billing/webhook" && req.method === "POST") return handleBillingWebhook(req);
           if (pathname === "/api/v1/billing/plan" && req.method === "GET") return handleBillingPlan(req);
           if (pathname === "/api/v1/billing/portal" && req.method === "POST") return handleBillingPortal(req);
+          if (pathname === "/api/v1/feedback" && req.method === "POST") return handleFeedback(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);
