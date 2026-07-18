@@ -13,6 +13,8 @@ import { ingestDocument } from "./src/lib/ingestion/pipeline";
 import { evaluatePatternRule } from "./src/lib/rules/pattern-evaluator";
 import { evaluateSemanticRule } from "./src/lib/rules/semantic-evaluator";
 import { generateAlertsFromEvaluations, generateAlert, toFeedItem, transitionAlert } from "./src/lib/alerts/generator";
+import { RULE_TEMPLATES } from "./src/lib/rules/templates";
+import { checkTierLimit, getUsageStats } from "./src/lib/tiers/index";
 import { z } from "zod";
 
 const PORT = 3000;
@@ -92,11 +94,15 @@ async function handleAuthMe(req: Request): Promise<Response> {
 
 // Document Handlers
 async function handleIngest(req: Request): Promise<Response> {
-  try {
-    const user = await getAuthUser(req);
-    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
-    const ct = req.headers.get("content-type") || "";
-    if (!ct.includes("multipart/form-data")) return errJson("INVALID_CONTENT_TYPE", "Expected multipart/form-data.", 400);
+try {
+  const user = await getAuthUser(req);
+  if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+  const ct = req.headers.get("content-type") || "";
+  if (!ct.includes("multipart/form-data")) return errJson("INVALID_CONTENT_TYPE", "Expected multipart/form-data.", 400);
+
+  // Tier limit check
+  const docLimit = await checkTierLimit("documents", user.tenantId);
+  if (!docLimit.allowed) return errJson("TIER_LIMIT", docLimit.message!, 402);
     const fd = await req.formData();
     const files = fd.getAll("files") as File[];
     const sf = fd.get("file") as File | null;
@@ -169,10 +175,14 @@ async function handleRulesList(req: Request): Promise<Response> {
 }
 
 async function handleRulesCreate(req: Request): Promise<Response> {
-  try {
-    const user = await getAuthUser(req);
-    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
-    const db = getDb();
+try {
+  const user = await getAuthUser(req);
+  if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+  const db = getDb();
+
+  // Tier limit check for rules
+  const ruleLimit = await checkTierLimit("rules", user.tenantId);
+  if (!ruleLimit.allowed) return errJson("TIER_LIMIT", ruleLimit.message!, 402);
     const body = await req.json();
     let ruleSetId = body.ruleSetId;
     if (!ruleSetId) {
@@ -533,6 +543,9 @@ async function handleDashboardSummary(req: Request): Promise<Response> {
     const [openAlerts] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "open")));
     const [activeRules] = await db.select({ total: count() }).from(rules).innerJoin(ruleSets, eq(rules.ruleSetId, ruleSets.id)).where(and(eq(ruleSets.tenantId, user.tenantId), eq(rules.isActive, true)));
 
+    // Usage stats by tier
+    const usage = await getUsageStats(user.tenantId);
+
     // Rule health: simplified
     const [passedCount] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "resolved")));
     const [failedCount] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "open")));
@@ -549,8 +562,94 @@ async function handleDashboardSummary(req: Request): Promise<Response> {
         fail: failedCount?.total ?? 0,
         warning: warningCount?.total ?? 0,
       },
+      usage,
     });
   } catch (err) { console.error("Dashboard:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Templates Handler ─────────────────────────────────────────
+
+async function handleTemplatesSeed(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+
+    // Get or create a default rule set for this tenant
+    let [existing] = await db
+      .select({ id: ruleSets.id })
+      .from(ruleSets)
+      .where(eq(ruleSets.tenantId, user.tenantId))
+      .limit(1);
+
+    if (!existing) {
+      const [rs] = await db
+        .insert(ruleSets)
+        .values({
+          tenantId: user.tenantId,
+          name: "Default Rule Set",
+          framework: "custom",
+          isActive: true,
+          createdBy: user.id,
+        })
+        .returning();
+      existing = rs;
+    }
+
+    const created: any[] = [];
+    const skipped: string[] = [];
+
+    for (const tmpl of RULE_TEMPLATES) {
+      // Check tier limit for rules before each insert
+      const ruleLimit = await checkTierLimit("rules", user.tenantId);
+      if (!ruleLimit.allowed) {
+        skipped.push(`${tmpl.name} (tier limit)`);
+        continue;
+      }
+
+      const [rule] = await db
+        .insert(rules)
+        .values({
+          ruleSetId: existing.id,
+          name: tmpl.name,
+          description: tmpl.description,
+          type: tmpl.type,
+          config: tmpl.config as any,
+          severity: tmpl.severity,
+          isActive: true,
+        })
+        .returning();
+
+      await auditEvents.ruleCreated(user.tenantId, rule.id, {
+        name: rule.name,
+        type: rule.type,
+        fromTemplate: true,
+      });
+
+      created.push({
+        id: rule.id,
+        name: rule.name,
+        type: rule.type,
+        severity: rule.severity,
+        framework: tmpl.framework,
+        category: tmpl.category,
+        createdAt: String(rule.createdAt),
+      });
+    }
+
+    return json(
+      {
+        created: created.length,
+        skipped: skipped.length,
+        rules: created,
+        skippedRules: skipped,
+      },
+      201
+    );
+  } catch (err) {
+    console.error("Templates:", err);
+    return errJson("INTERNAL_ERROR", "Failed to seed templates.", 500);
+  }
 }
 
 // ── Route matching helpers ───────────────────────────────────
@@ -588,6 +687,7 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/audit/verify" && req.method === "POST") return handleAuditVerify(req);
           if (pathname === "/api/v1/audit/export" && req.method === "GET") return handleAuditExport(req);
           if (pathname === "/api/v1/dashboard/summary" && req.method === "GET") return handleDashboardSummary(req);
+          if (pathname === "/api/v1/rules/templates" && req.method === "POST") return handleTemplatesSeed(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);
