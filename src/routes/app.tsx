@@ -65,6 +65,7 @@ function AppShell() {
     { label: "Documents", href: "/app/documents" },
     { label: "Rules", href: "/app/rules" },
     { label: "Alerts", href: "/app/alerts", badge: unackedCount },
+    { label: "Settings", href: "/app/settings" },
   ];
 
   return (

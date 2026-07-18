@@ -83,6 +83,9 @@ function SignupPage() {
           <p className="text-center text-sm text-gray-500">
             Already have an account? <a href="/login" className="text-indigo-400 hover:text-indigo-300">Sign in</a>
           </p>
+          <p className="text-center text-sm text-gray-500">
+            <a href="/pricing" className="text-indigo-400 hover:text-indigo-300">View pricing plans</a> before signing up.
+          </p>
         </form>
       </div>
     </div>
