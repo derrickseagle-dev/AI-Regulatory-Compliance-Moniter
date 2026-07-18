@@ -9,6 +9,7 @@ function AppShell() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [unackedCount, setUnackedCount] = useState(0);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -19,6 +20,20 @@ function AppShell() {
       })
       .catch(() => window.location.href = "/login")
       .finally(() => setLoading(false));
+  }, []);
+
+  // Poll for unacknowledged alert count
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/v1/alerts?status=open&limit=1");
+        const data = await res.json();
+        setUnackedCount(data.meta?.total || 0);
+      } catch {}
+    };
+    poll();
+    const interval = setInterval(poll, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleLogout = async () => {
@@ -36,6 +51,7 @@ function AppShell() {
     { label: "Dashboard", href: "/app" },
     { label: "Documents", href: "/app/documents" },
     { label: "Rules", href: "/app/rules" },
+    { label: "Alerts", href: "/app/alerts", badge: unackedCount },
   ];
 
   return (
@@ -49,7 +65,14 @@ function AppShell() {
         <nav className="mt-4 px-3 space-y-1">
           {navItems.map(item => {
             const isActive = location.pathname === item.href || (item.href !== "/app" && location.pathname.startsWith(item.href));
-            return <a key={item.href} href={item.href} className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${isActive ? "bg-indigo-600/20 text-indigo-400" : "text-gray-400 hover:bg-gray-800/50 hover:text-gray-200"}`}>{item.label}</a>;
+            return (
+              <a key={item.href} href={item.href} className={`flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition ${isActive ? "bg-indigo-600/20 text-indigo-400" : "text-gray-400 hover:bg-gray-800/50 hover:text-gray-200"}`}>
+                <span>{item.label}</span>
+                {item.badge !== undefined && item.badge > 0 && (
+                  <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-bold text-red-400">{item.badge}</span>
+                )}
+              </a>
+            );
           })}
         </nav>
         <div className="absolute bottom-0 left-0 right-0 border-t border-gray-800 p-4">

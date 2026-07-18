@@ -1,16 +1,18 @@
 // Production server for Regula AI.
 // Bun runs TypeScript natively, so we can import from ~/lib directly.
 import handler from "./dist/server/server.js";
-import { getDb, tenants, users, documents, rules, ruleSets } from "./src/lib/db/index";
-import { eq, and, or, desc, count } from "drizzle-orm";
+import { getDb, tenants, users, documents, rules, ruleSets, alerts, alertGroups, auditLog } from "./src/lib/db/index";
+import { eq, and, or, desc, count, gte, lte, like } from "drizzle-orm";
 import {
   hashPassword, verifyPassword, createSession, validateSession,
   destroySession, getSessionToken, setSessionCookie, clearSessionCookie,
 } from "./src/lib/auth/index";
 import { auditEvents } from "./src/lib/audit/index";
+import { auditEventFactory, verifyChain, toCSV, toJSON, type AuditEvent } from "./src/lib/audit/trail";
 import { ingestDocument } from "./src/lib/ingestion/pipeline";
 import { evaluatePatternRule } from "./src/lib/rules/pattern-evaluator";
 import { evaluateSemanticRule } from "./src/lib/rules/semantic-evaluator";
+import { generateAlertsFromEvaluations, generateAlert, toFeedItem, transitionAlert } from "./src/lib/alerts/generator";
 import { z } from "zod";
 
 const PORT = 3000;
@@ -315,6 +317,252 @@ function matchRoute(pathname: string): { handler: string; ruleId?: string } | nu
   return null;
 }
 
+// ── Alerts Handlers ────────────────────────────────────────────
+
+async function handleAlertsList(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const url = new URL(req.url);
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+    const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20")));
+    const status = url.searchParams.get("status");
+    const severity = url.searchParams.get("severity");
+    const framework = url.searchParams.get("framework");
+    const search = url.searchParams.get("search");
+    const sort = url.searchParams.get("sort") || "-createdAt";
+
+    const conds = [eq(alerts.tenantId, user.tenantId)];
+    if (status) conds.push(eq(alerts.status, status as any));
+    if (severity) conds.push(eq(alerts.severity, severity as any));
+    if (framework) conds.push(eq(alerts.framework, framework));
+    if (search) conds.push(or(like(alerts.title, `%${search}%`), like(alerts.evidenceText, `%${search}%`))!);
+
+    const [tr] = await db.select({ total: count() }).from(alerts).where(and(...conds));
+    const orderCol = sort.startsWith("-") ? desc(alerts[sort.slice(1) as keyof typeof alerts] as any) : (alerts[sort as keyof typeof alerts] as any);
+    const rows = await db.select().from(alerts).where(and(...conds))
+      .orderBy(desc(alerts.createdAt)).limit(limit).offset((page - 1) * limit);
+
+    return json({
+      data: rows.map(r => ({ ...r, config: undefined, createdAt: String(r.createdAt), updatedAt: String(r.updatedAt), acknowledgedAt: r.acknowledgedAt ? String(r.acknowledgedAt) : null, resolvedAt: r.resolvedAt ? String(r.resolvedAt) : null, dismissedAt: r.dismissedAt ? String(r.dismissedAt) : null })),
+      meta: { page, limit, total: tr?.total ?? 0, totalPages: Math.ceil((tr?.total ?? 0) / limit) },
+    });
+  } catch (err) { console.error("Alerts list:", err); return errJson("INTERNAL_ERROR", "Failed to fetch alerts.", 500); }
+}
+
+async function handleAlertGet(req: Request, alertId: string): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const [alert] = await db.select().from(alerts).where(and(eq(alerts.id, alertId), eq(alerts.tenantId, user.tenantId))).limit(1);
+    if (!alert) return errJson("NOT_FOUND", "Alert not found.", 404);
+    return json({ ...alert, createdAt: String(alert.createdAt), updatedAt: String(alert.updatedAt), acknowledgedAt: alert.acknowledgedAt ? String(alert.acknowledgedAt) : null, resolvedAt: alert.resolvedAt ? String(alert.resolvedAt) : null, dismissedAt: alert.dismissedAt ? String(alert.dismissedAt) : null });
+  } catch (err) { console.error("Alert get:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+async function handleAlertAction(req: Request, alertId: string, action: string): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const [alert] = await db.select().from(alerts).where(and(eq(alerts.id, alertId), eq(alerts.tenantId, user.tenantId))).limit(1);
+    if (!alert) return errJson("NOT_FOUND", "Alert not found.", 404);
+
+    const now = new Date().toISOString();
+    const updates: Record<string, any> = { updatedAt: now };
+    let auditPayload: Record<string, unknown> = { alertId, action };
+
+    if (action === "acknowledge") {
+      if (alert.status !== "open") return errJson("INVALID_TRANSITION", `Cannot acknowledge alert in "${alert.status}" status.`, 400);
+      updates.status = "acknowledged";
+      updates.acknowledgedAt = now;
+      updates.acknowledgedBy = user.id;
+      auditPayload = { ...auditPayload, fromStatus: alert.status, toStatus: "acknowledged" };
+      await db.update(alerts).set(updates).where(eq(alerts.id, alertId));
+      await auditEvents.alertAcknowledged(user.tenantId, alertId, auditPayload, user);
+    } else if (action === "resolve") {
+      if (alert.status !== "acknowledged") return errJson("INVALID_TRANSITION", `Cannot resolve alert in "${alert.status}" status.`, 400);
+      updates.status = "resolved";
+      updates.resolvedAt = now;
+      updates.resolvedBy = user.id;
+      auditPayload = { ...auditPayload, fromStatus: alert.status, toStatus: "resolved" };
+      await db.update(alerts).set(updates).where(eq(alerts.id, alertId));
+      await auditEvents.alertResolved(user.tenantId, alertId, auditPayload, user);
+    } else if (action === "dismiss") {
+      if (alert.status !== "open" && alert.status !== "acknowledged") return errJson("INVALID_TRANSITION", `Cannot dismiss alert in "${alert.status}" status.`, 400);
+      updates.status = "false_positive";
+      updates.dismissedAt = now;
+      updates.dismissedBy = user.id;
+      auditPayload = { ...auditPayload, fromStatus: alert.status, toStatus: "false_positive" };
+      await db.update(alerts).set(updates).where(eq(alerts.id, alertId));
+      await auditEvents.alertDismissed(user.tenantId, alertId, auditPayload, user);
+    } else {
+      return errJson("INVALID_ACTION", `Unknown action: ${action}`, 400);
+    }
+
+    const [updated] = await db.select().from(alerts).where(eq(alerts.id, alertId)).limit(1);
+    return json({ ...updated, createdAt: String(updated.createdAt), updatedAt: String(updated.updatedAt), acknowledgedAt: updated.acknowledgedAt ? String(updated.acknowledgedAt) : null, resolvedAt: updated.resolvedAt ? String(updated.resolvedAt) : null, dismissedAt: updated.dismissedAt ? String(updated.dismissedAt) : null });
+  } catch (err) { console.error("Alert action:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Audit Handlers ────────────────────────────────────────────
+
+async function handleAuditQuery(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const url = new URL(req.url);
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
+    const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20")));
+    const resourceType = url.searchParams.get("resourceType");
+    const resourceId = url.searchParams.get("resourceId");
+
+    const conds = [eq(auditLog.tenantId, user.tenantId)];
+    if (resourceType) conds.push(eq(auditLog.resourceType, resourceType));
+    if (resourceId) conds.push(eq(auditLog.resourceId, resourceId));
+
+    const [tr] = await db.select({ total: count() }).from(auditLog).where(and(...conds));
+    const rows = await db.select().from(auditLog).where(and(...conds))
+      .orderBy(desc(auditLog.createdAt)).limit(limit).offset((page - 1) * limit);
+
+    return json({
+      data: rows.map(r => ({ ...r, payload: r.payload as any, createdAt: String(r.createdAt) })),
+      meta: { page, limit, total: tr?.total ?? 0, totalPages: Math.ceil((tr?.total ?? 0) / limit) },
+    });
+  } catch (err) { console.error("Audit query:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+async function handleAuditVerify(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const url = new URL(req.url);
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+
+    const conds = [eq(auditLog.tenantId, user.tenantId)];
+    if (from) conds.push(gte(auditLog.createdAt, new Date(from)));
+    if (to) conds.push(lte(auditLog.createdAt, new Date(to)));
+
+    const rows = await db.select().from(auditLog).where(and(...conds))
+      .orderBy(auditLog.id as any).limit(10000);
+
+    const events: AuditEvent[] = rows.map(r => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      eventType: r.eventType,
+      actorId: r.actorId,
+      resourceType: r.resourceType,
+      resourceId: r.resourceId,
+      payload: r.payload as Record<string, unknown>,
+      prevHash: r.prevHash,
+      contentHash: r.contentHash,
+      createdAt: String(r.createdAt),
+    }));
+
+    const result = verifyChain(events);
+    return json(result);
+  } catch (err) { console.error("Audit verify:", err); return errJson("INTERNAL_ERROR", "Verification failed.", 500); }
+}
+
+async function handleAuditExport(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+    const url = new URL(req.url);
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    const format = url.searchParams.get("format") || "json";
+
+    const conds = [eq(auditLog.tenantId, user.tenantId)];
+    if (from) conds.push(gte(auditLog.createdAt, new Date(from)));
+    if (to) conds.push(lte(auditLog.createdAt, new Date(to)));
+
+    const rows = await db.select().from(auditLog).where(and(...conds))
+      .orderBy(auditLog.id as any).limit(50000);
+
+    const events: AuditEvent[] = rows.map(r => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      eventType: r.eventType,
+      actorId: r.actorId,
+      resourceType: r.resourceType,
+      resourceId: r.resourceId,
+      payload: r.payload as Record<string, unknown>,
+      prevHash: r.prevHash,
+      contentHash: r.contentHash,
+      ipAddress: r.ipAddress || undefined,
+      userAgent: r.userAgent || undefined,
+      createdAt: String(r.createdAt),
+    }));
+
+    if (format === "csv") {
+      return new Response(toCSV(events), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv",
+          "Content-Disposition": `attachment; filename="audit-export-${new Date().toISOString().slice(0, 10)}.csv"`,
+        },
+      });
+    }
+
+    return new Response(toJSON(events), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Disposition": `attachment; filename="audit-export-${new Date().toISOString().slice(0, 10)}.json"`,
+      },
+    });
+  } catch (err) { console.error("Audit export:", err); return errJson("INTERNAL_ERROR", "Export failed.", 500); }
+}
+
+// ── Dashboard Handler ─────────────────────────────────────────
+
+async function handleDashboardSummary(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Auth required.", 401);
+    const db = getDb();
+
+    const [docCount] = await db.select({ total: count() }).from(documents).where(eq(documents.tenantId, user.tenantId));
+    const [openAlerts] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "open")));
+    const [activeRules] = await db.select({ total: count() }).from(rules).innerJoin(ruleSets, eq(rules.ruleSetId, ruleSets.id)).where(and(eq(ruleSets.tenantId, user.tenantId), eq(rules.isActive, true)));
+
+    // Rule health: simplified
+    const [passedCount] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "resolved")));
+    const [failedCount] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "open")));
+    const [warningCount] = await db.select({ total: count() }).from(alerts).where(and(eq(alerts.tenantId, user.tenantId), eq(alerts.status, "acknowledged")));
+
+    return json({
+      totalDocuments: docCount?.total ?? 0,
+      documentsThisWeek: 0, // TODO: filter by date
+      openAlerts: openAlerts?.total ?? 0,
+      activeRules: activeRules?.total ?? 0,
+      evaluationsRun: 0, // TODO
+      ruleHealth: {
+        pass: passedCount?.total ?? 0,
+        fail: failedCount?.total ?? 0,
+        warning: warningCount?.total ?? 0,
+      },
+    });
+  } catch (err) { console.error("Dashboard:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Route matching helpers ───────────────────────────────────
+
+function matchAlertRoute(pathname: string): { handler: string; alertId?: string; action?: string } | null {
+  const m = pathname.match(/^\/api\/v1\/alerts\/([^/]+)\/(acknowledge|resolve|dismiss)$/);
+  if (m) return { handler: "alertAction", alertId: m[1], action: m[2] };
+  const m2 = pathname.match(/^\/api\/v1\/alerts\/([^/]+)$/);
+  if (m2) return { handler: "alertDetail", alertId: m2[1] };
+  return null;
+}
+
 // Server
 const freePort = `for _ in $(seq 1 25); do pids=$(lsof -t -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true); if [ -z "$pids" ]; then exit 0; fi; kill $pids 2>/dev/null || true; sleep 0.2; done`;
 
@@ -335,6 +583,11 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/rule-sets" && req.method === "GET") return handleRuleSets(req);
           if (pathname === "/api/v1/rules" && req.method === "GET") return handleRulesList(req);
           if (pathname === "/api/v1/rules" && req.method === "POST") return handleRulesCreate(req);
+          if (pathname === "/api/v1/alerts" && req.method === "GET") return handleAlertsList(req);
+          if (pathname === "/api/v1/audit" && req.method === "GET") return handleAuditQuery(req);
+          if (pathname === "/api/v1/audit/verify" && req.method === "POST") return handleAuditVerify(req);
+          if (pathname === "/api/v1/audit/export" && req.method === "GET") return handleAuditExport(req);
+          if (pathname === "/api/v1/dashboard/summary" && req.method === "GET") return handleDashboardSummary(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);
@@ -342,6 +595,11 @@ for (let attempt = 1; ; attempt++) {
               if (req.method === "GET") return handleRuleGet(req, rm.ruleId!);
               if (req.method === "PUT") return handleRuleUpdate(req, rm.ruleId!);
             }
+          }
+          const am = matchAlertRoute(pathname);
+          if (am) {
+            if (am.handler === "alertDetail" && req.method === "GET") return handleAlertGet(req, am.alertId!);
+            if (am.handler === "alertAction" && req.method === "POST") return handleAlertAction(req, am.alertId!, am.action!);
           }
         } catch (e) { console.error("API error:", e); }
         if (pathname !== "/") { const f = Bun.file(CLIENT_DIR + pathname); if (await f.exists()) return new Response(f); }

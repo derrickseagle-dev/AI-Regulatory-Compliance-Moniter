@@ -26,6 +26,8 @@ export async function writeAuditEntry(
  * Convenience helpers for common audit events
  */
 export const auditEvents = {
+  writeAuditEntry,
+
   documentUploaded(
     tenantId: string,
     documentId: string,
@@ -62,6 +64,24 @@ export const auditEvents = {
     );
   },
 
+  evaluationCompleted(
+    tenantId: string,
+    evaluationId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "evaluation.completed",
+        resourceType: "evaluation",
+        resourceId: evaluationId,
+        payload,
+      },
+      user,
+    );
+  },
+
   userLogin(
     tenantId: string,
     userId: string,
@@ -70,6 +90,21 @@ export const auditEvents = {
     return writeAuditEntry({
       tenantId,
       eventType: "user.login",
+      resourceType: "user",
+      resourceId: userId,
+      actorId: userId,
+      payload,
+    });
+  },
+
+  userLogout(
+    tenantId: string,
+    userId: string,
+    payload: Record<string, unknown>,
+  ) {
+    return writeAuditEntry({
+      tenantId,
+      eventType: "user.logout",
       resourceType: "user",
       resourceId: userId,
       actorId: userId,
@@ -107,6 +142,114 @@ export const auditEvents = {
         eventType: "rule.updated",
         resourceType: "rule",
         resourceId: ruleId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  ruleDeleted(
+    tenantId: string,
+    ruleId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "rule.deleted",
+        resourceType: "rule",
+        resourceId: ruleId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  alertCreated(
+    tenantId: string,
+    alertId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "alert.created",
+        resourceType: "alert",
+        resourceId: alertId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  alertAcknowledged(
+    tenantId: string,
+    alertId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "alert.acknowledged",
+        resourceType: "alert",
+        resourceId: alertId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  alertResolved(
+    tenantId: string,
+    alertId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "alert.resolved",
+        resourceType: "alert",
+        resourceId: alertId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  alertDismissed(
+    tenantId: string,
+    alertId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "alert.dismissed",
+        resourceType: "alert",
+        resourceId: alertId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  alertStatusChanged(
+    tenantId: string,
+    alertId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "alert.status_changed",
+        resourceType: "alert",
+        resourceId: alertId,
         payload,
       },
       user,
