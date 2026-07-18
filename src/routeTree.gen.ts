@@ -15,6 +15,7 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as AppRulesRouteImport } from './routes/app/rules'
+import { Route as AppOnboardingRouteImport } from './routes/app/onboarding'
 import { Route as AppDocumentsRouteImport } from './routes/app.documents'
 import { Route as AppAlertsRouteImport } from './routes/app/alerts'
 import { Route as AppAlertsIndexRouteImport } from './routes/app/alerts.index'
@@ -50,6 +51,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const AppRulesRoute = AppRulesRouteImport.update({
   id: '/rules',
   path: '/rules',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppOnboardingRoute = AppOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
   getParentRoute: () => AppRoute,
 } as any)
 const AppDocumentsRoute = AppDocumentsRouteImport.update({
@@ -90,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/app/alerts': typeof AppAlertsRouteWithChildren
   '/app/documents': typeof AppDocumentsRoute
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/rules': typeof AppRulesRouteWithChildren
   '/app/': typeof AppIndexRoute
   '/app/alerts/$id': typeof AppAlertsIdRoute
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/app/documents': typeof AppDocumentsRoute
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/rules': typeof AppRulesRouteWithChildren
   '/app': typeof AppIndexRoute
   '/app/alerts/$id': typeof AppAlertsIdRoute
@@ -117,6 +125,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/app/alerts': typeof AppAlertsRouteWithChildren
   '/app/documents': typeof AppDocumentsRoute
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/rules': typeof AppRulesRouteWithChildren
   '/app/': typeof AppIndexRoute
   '/app/alerts/$id': typeof AppAlertsIdRoute
@@ -133,6 +142,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/app/alerts'
     | '/app/documents'
+    | '/app/onboarding'
     | '/app/rules'
     | '/app/'
     | '/app/alerts/$id'
@@ -145,6 +155,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/signup'
     | '/app/documents'
+    | '/app/onboarding'
     | '/app/rules'
     | '/app'
     | '/app/alerts/$id'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/app/alerts'
     | '/app/documents'
+    | '/app/onboarding'
     | '/app/rules'
     | '/app/'
     | '/app/alerts/$id'
@@ -216,6 +228,13 @@ declare module '@tanstack/react-router' {
       path: '/rules'
       fullPath: '/app/rules'
       preLoaderRoute: typeof AppRulesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/onboarding': {
+      id: '/app/onboarding'
+      path: '/onboarding'
+      fullPath: '/app/onboarding'
+      preLoaderRoute: typeof AppOnboardingRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/documents': {
@@ -294,6 +313,7 @@ const AppRulesRouteWithChildren = AppRulesRoute._addFileChildren(
 interface AppRouteChildren {
   AppAlertsRoute: typeof AppAlertsRouteWithChildren
   AppDocumentsRoute: typeof AppDocumentsRoute
+  AppOnboardingRoute: typeof AppOnboardingRoute
   AppRulesRoute: typeof AppRulesRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
 }
@@ -301,6 +321,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppAlertsRoute: AppAlertsRouteWithChildren,
   AppDocumentsRoute: AppDocumentsRoute,
+  AppOnboardingRoute: AppOnboardingRoute,
   AppRulesRoute: AppRulesRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
 }
