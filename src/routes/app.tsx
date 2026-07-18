@@ -10,13 +10,26 @@ function AppShell() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [unackedCount, setUnackedCount] = useState(0);
+  const [showOnboardingBanner, setShowOnboardingBanner] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/me")
       .then(r => r.json())
       .then(data => {
-        if (!data.user) window.location.href = "/login";
-        else setUser(data.user);
+        if (!data.user) {
+          window.location.href = "/login";
+          return;
+        }
+        setUser(data.user);
+        // Redirect to onboarding if not completed and not already there
+        if (!data.user.onboardingCompleted && !location.pathname.startsWith("/app/onboarding")) {
+          window.location.href = "/app/onboarding";
+          return;
+        }
+        // Show banner only if onboarding is incomplete but user somehow landed here
+        if (!data.user.onboardingCompleted) {
+          setShowOnboardingBanner(false); // We redirect, so no banner for now
+        }
       })
       .catch(() => window.location.href = "/login")
       .finally(() => setLoading(false));
@@ -87,7 +100,27 @@ function AppShell() {
           <div className="flex-1" />
           <div className="text-sm text-gray-500">{user?.email}</div>
         </header>
-        <main className="flex-1 overflow-y-auto p-6"><Outlet /></main>
+        <main className="flex-1 overflow-y-auto p-6">
+          {showOnboardingBanner && (
+            <div className="mb-6 rounded-xl border border-indigo-500/30 bg-indigo-600/10 px-5 py-4">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600/30 text-indigo-400 text-sm font-bold">!</span>
+                  <div>
+                    <p className="text-sm font-medium text-white">Complete your onboarding</p>
+                    <p className="text-xs text-gray-400">Set up document monitoring and compliance rules to get started.</p>
+                  </div>
+                </div>
+                <a
+                  href="/app/onboarding"
+                  className="shrink-0 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition"
+                >
+                  Continue Setup
+                </a>
+              </div>
+            </div>
+          )}
+          <Outlet /></main>
       </div>
     </div>
   );

@@ -28,7 +28,7 @@ function SignupPage() {
       if (!res.ok) {
         setError(data.error?.message || "Signup failed");
       } else {
-        window.location.href = "/app";
+        window.location.href = "/app/onboarding";
       }
     } catch {
       setError("Network error. Please try again.");

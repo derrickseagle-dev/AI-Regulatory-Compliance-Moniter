@@ -15,6 +15,8 @@ import { evaluateSemanticRule } from "./src/lib/rules/semantic-evaluator";
 import { generateAlertsFromEvaluations, generateAlert, toFeedItem, transitionAlert } from "./src/lib/alerts/generator";
 import { RULE_TEMPLATES } from "./src/lib/rules/templates";
 import { checkTierLimit, getUsageStats } from "./src/lib/tiers/index";
+import { generateDailyDigest } from "./src/lib/email/digest";
+import { sendDigestEmail } from "./src/lib/email/sender";
 import { z } from "zod";
 
 const PORT = 3000;
@@ -55,10 +57,10 @@ async function handleAuthSignup(req: Request): Promise<Response> {
     const [eu] = await db.select({ id: users.id }).from(users).where(and(eq(users.email, email), eq(users.tenantId, tenant.id))).limit(1);
     if (eu) return errJson("CONFLICT", "User already exists.", 409);
     const ph = await hashPassword(password);
-    const [user] = await db.insert(users).values({ email, passwordHash: ph, name: name || email.split("@")[0], role: "owner", tenantId: tenant.id }).returning();
+    const [user] = await db.insert(users).values({ email, passwordHash: ph, name: name || email.split("@")[0], role: "owner", tenantId: tenant.id, onboardingCompleted: false, onboardingStep: 0, digestPreference: "daily" }).returning();
     const token = await createSession(user.id);
     await auditEvents.userLogin(tenant.id, user.id, { action: "signup", email: user.email });
-    return setSessionCookie(json({ user: { id: user.id, email: user.email, name: user.name, role: user.role }, tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug, tier: tenant.tier } }), token);
+    return setSessionCookie(json({ user: { id: user.id, email: user.email, name: user.name, role: user.role, onboardingCompleted: false, onboardingStep: 0 }, tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug, tier: tenant.tier } }), token);
   } catch (err) { console.error("Signup:", err); return errJson("INTERNAL_ERROR", "Unexpected error.", 500); }
 }
 
@@ -89,7 +91,9 @@ async function handleAuthLogout(req: Request): Promise<Response> {
 async function handleAuthMe(req: Request): Promise<Response> {
   const user = await getAuthUser(req);
   if (!user) return json({ user: null });
-  return json({ user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId, tenantSlug: user.tenantSlug, tenantTier: user.tenantTier } });
+  const db = getDb();
+  const [fullUser] = await db.select({ onboardingCompleted: users.onboardingCompleted, onboardingStep: users.onboardingStep, digestPreference: users.digestPreference }).from(users).where(eq(users.id, user.id)).limit(1);
+  return json({ user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId, tenantSlug: user.tenantSlug, tenantTier: user.tenantTier, onboardingCompleted: fullUser?.onboardingCompleted ?? false, onboardingStep: fullUser?.onboardingStep ?? 0, digestPreference: fullUser?.digestPreference ?? "daily" } });
 }
 
 // Document Handlers
@@ -652,6 +656,76 @@ async function handleTemplatesSeed(req: Request): Promise<Response> {
   }
 }
 
+// ── Onboarding Handler ────────────────────────────────────────
+
+const onboardingSchema = z.object({
+  onboardingStep: z.number().int().min(0).max(3).optional(),
+  onboardingCompleted: z.boolean().optional(),
+});
+
+async function handleOnboarding(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const body = await req.json();
+    const p = onboardingSchema.safeParse(body);
+    if (!p.success) return errJson("VALIDATION_ERROR", "Invalid input", 400);
+    const db = getDb();
+    const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
+    if (p.data.onboardingStep !== undefined) updates.onboardingStep = p.data.onboardingStep;
+    if (p.data.onboardingCompleted !== undefined) updates.onboardingCompleted = p.data.onboardingCompleted;
+    await db.update(users).set(updates).where(eq(users.id, user.id));
+    const [updated] = await db.select({ onboardingCompleted: users.onboardingCompleted, onboardingStep: users.onboardingStep }).from(users).where(eq(users.id, user.id)).limit(1);
+    return json({ onboardingCompleted: updated?.onboardingCompleted ?? false, onboardingStep: updated?.onboardingStep ?? 0 });
+  } catch (err) { console.error("Onboarding:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Preferences Handler ───────────────────────────────────────
+
+const preferencesSchema = z.object({
+  digestPreference: z.enum(["daily", "weekly", "off"]).optional(),
+});
+
+async function handlePreferences(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const body = await req.json();
+    const p = preferencesSchema.safeParse(body);
+    if (!p.success) return errJson("VALIDATION_ERROR", "Invalid input", 400);
+    const db = getDb();
+    const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
+    if (p.data.digestPreference !== undefined) updates.digestPreference = p.data.digestPreference;
+    await db.update(users).set(updates).where(eq(users.id, user.id));
+    const [updated] = await db.select({ digestPreference: users.digestPreference }).from(users).where(eq(users.id, user.id)).limit(1);
+    return json({ digestPreference: updated?.digestPreference ?? "daily" });
+  } catch (err) { console.error("Preferences:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
+// ── Admin Digest Handler ──────────────────────────────────────
+
+async function handleAdminSendDigest(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    if (user.role !== "owner" && user.role !== "admin") return errJson("FORBIDDEN", "Admin access required.", 403);
+    const body = await req.json().catch(() => ({}));
+    const targetUserId = body.userId || user.id;
+    const targetTenantId = body.tenantId || user.tenantId;
+
+    // Verify the target user belongs to the tenant
+    const db = getDb();
+    const [targetUser] = await db.select({ id: users.id, email: users.email, name: users.name }).from(users).where(and(eq(users.id, targetUserId), eq(users.tenantId, targetTenantId))).limit(1);
+    if (!targetUser) return errJson("NOT_FOUND", "Target user not found in tenant.", 404);
+
+    const digest = await generateDailyDigest(targetTenantId, targetUserId);
+    if (!digest) return errJson("NOT_FOUND", "Could not generate digest.", 404);
+
+    const entry = await sendDigestEmail(digest);
+    return json({ success: true, digest: entry }, 200);
+  } catch (err) { console.error("Digest:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
+}
+
 // ── Route matching helpers ───────────────────────────────────
 
 function matchAlertRoute(pathname: string): { handler: string; alertId?: string; action?: string } | null {
@@ -688,6 +762,9 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/audit/export" && req.method === "GET") return handleAuditExport(req);
           if (pathname === "/api/v1/dashboard/summary" && req.method === "GET") return handleDashboardSummary(req);
           if (pathname === "/api/v1/rules/templates" && req.method === "POST") return handleTemplatesSeed(req);
+          if (pathname === "/api/v1/me/onboarding" && req.method === "PATCH") return handleOnboarding(req);
+          if (pathname === "/api/v1/me/preferences" && req.method === "PATCH") return handlePreferences(req);
+          if (pathname === "/api/v1/admin/send-digest" && req.method === "POST") return handleAdminSendDigest(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);

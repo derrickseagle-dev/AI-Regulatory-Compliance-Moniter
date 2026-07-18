@@ -45,6 +45,8 @@ export const tenants = pgTable("tenants", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const digestPreferenceEnum = pgEnum("digest_preference", ["daily", "weekly", "off"]);
+
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id").references(() => tenants.id).notNull(),
@@ -52,6 +54,9 @@ export const users = pgTable("users", {
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   name: varchar("name", { length: 255 }),
   role: userRoleEnum("role").default("member").notNull(),
+  onboardingCompleted: boolean("onboarding_completed").default(false).notNull(),
+  onboardingStep: integer("onboarding_step").default(0).notNull(),
+  digestPreference: digestPreferenceEnum("digest_preference").default("daily").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
