@@ -14,7 +14,10 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AppRulesRouteImport } from './routes/app/rules'
 import { Route as AppDocumentsRouteImport } from './routes/app.documents'
+import { Route as AppRulesNewRouteImport } from './routes/app/rules.new'
+import { Route as AppRulesIdRouteImport } from './routes/app/rules.$id'
 
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
@@ -41,10 +44,25 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppRulesRoute = AppRulesRouteImport.update({
+  id: '/rules',
+  path: '/rules',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppDocumentsRoute = AppDocumentsRouteImport.update({
   id: '/documents',
   path: '/documents',
   getParentRoute: () => AppRoute,
+} as any)
+const AppRulesNewRoute = AppRulesNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => AppRulesRoute,
+} as any)
+const AppRulesIdRoute = AppRulesIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AppRulesRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -53,14 +71,20 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/app/documents': typeof AppDocumentsRoute
+  '/app/rules': typeof AppRulesRouteWithChildren
   '/app/': typeof AppIndexRoute
+  '/app/rules/$id': typeof AppRulesIdRoute
+  '/app/rules/new': typeof AppRulesNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/app/documents': typeof AppDocumentsRoute
+  '/app/rules': typeof AppRulesRouteWithChildren
   '/app': typeof AppIndexRoute
+  '/app/rules/$id': typeof AppRulesIdRoute
+  '/app/rules/new': typeof AppRulesNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -69,13 +93,33 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/app/documents': typeof AppDocumentsRoute
+  '/app/rules': typeof AppRulesRouteWithChildren
   '/app/': typeof AppIndexRoute
+  '/app/rules/$id': typeof AppRulesIdRoute
+  '/app/rules/new': typeof AppRulesNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/app' | '/login' | '/signup' | '/app/documents' | '/app/'
+  fullPaths:
+    | '/'
+    | '/app'
+    | '/login'
+    | '/signup'
+    | '/app/documents'
+    | '/app/rules'
+    | '/app/'
+    | '/app/rules/$id'
+    | '/app/rules/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/signup' | '/app/documents' | '/app'
+  to:
+    | '/'
+    | '/login'
+    | '/signup'
+    | '/app/documents'
+    | '/app/rules'
+    | '/app'
+    | '/app/rules/$id'
+    | '/app/rules/new'
   id:
     | '__root__'
     | '/'
@@ -83,7 +127,10 @@ export interface FileRouteTypes {
     | '/login'
     | '/signup'
     | '/app/documents'
+    | '/app/rules'
     | '/app/'
+    | '/app/rules/$id'
+    | '/app/rules/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -130,6 +177,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/rules': {
+      id: '/app/rules'
+      path: '/rules'
+      fullPath: '/app/rules'
+      preLoaderRoute: typeof AppRulesRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/documents': {
       id: '/app/documents'
       path: '/documents'
@@ -137,16 +191,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppDocumentsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/rules/new': {
+      id: '/app/rules/new'
+      path: '/new'
+      fullPath: '/app/rules/new'
+      preLoaderRoute: typeof AppRulesNewRouteImport
+      parentRoute: typeof AppRulesRoute
+    }
+    '/app/rules/$id': {
+      id: '/app/rules/$id'
+      path: '/$id'
+      fullPath: '/app/rules/$id'
+      preLoaderRoute: typeof AppRulesIdRouteImport
+      parentRoute: typeof AppRulesRoute
+    }
   }
 }
 
+interface AppRulesRouteChildren {
+  AppRulesIdRoute: typeof AppRulesIdRoute
+  AppRulesNewRoute: typeof AppRulesNewRoute
+}
+
+const AppRulesRouteChildren: AppRulesRouteChildren = {
+  AppRulesIdRoute: AppRulesIdRoute,
+  AppRulesNewRoute: AppRulesNewRoute,
+}
+
+const AppRulesRouteWithChildren = AppRulesRoute._addFileChildren(
+  AppRulesRouteChildren,
+)
+
 interface AppRouteChildren {
   AppDocumentsRoute: typeof AppDocumentsRoute
+  AppRulesRoute: typeof AppRulesRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppDocumentsRoute: AppDocumentsRoute,
+  AppRulesRoute: AppRulesRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
 }
 
