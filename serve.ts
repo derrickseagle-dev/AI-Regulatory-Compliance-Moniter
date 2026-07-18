@@ -19,6 +19,7 @@ import { generateDailyDigest } from "./src/lib/email/digest";
 import { sendDigestEmail, sendTransactionalEmail } from "./src/lib/email/sender";
 import { feedback } from "./src/lib/db/index";
 import { createCheckoutSession, verifyWebhookSignature, extractEventDetails, createBillingPortalSession } from "./src/lib/billing/index";
+import { seedDemoData, clearDemoData, hasDemoData } from "./src/lib/seed/index";
 import { z } from "zod";
 
 const PORT = 3000;
@@ -733,6 +734,11 @@ async function handleOnboarding(req: Request): Promise<Response> {
         welcomeHtml,
         welcomeText,
       ).catch(err => console.error("[Email] Welcome email failed:", err));
+
+      // Auto-seed demo data on onboarding completion (fire-and-forget)
+      seedDemoData(user.tenantId, user.id).then(result => {
+        console.log(`[Seed] Auto-seeded demo data for tenant ${user.tenantId}: ${result.documentsCreated} docs, ${result.rulesActivated} rules, ${result.alertsGenerated} alerts`);
+      }).catch(err => console.error("[Seed] Auto-seed failed:", err));
     }
 
     const [updated] = await db.select({ onboardingCompleted: users.onboardingCompleted, onboardingStep: users.onboardingStep }).from(users).where(eq(users.id, user.id)).limit(1);
@@ -1011,6 +1017,50 @@ async function handleBillingPortal(req: Request): Promise<Response> {
 
 // ── Route matching helpers ───────────────────────────────────
 
+// ── Demo Data Seed Handlers ──────────────────────────────────
+
+async function handleSeedDemoData(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    if (user.role !== "owner" && user.role !== "admin")
+      return errJson("FORBIDDEN", "Admin access required.", 403);
+
+    const result = await seedDemoData(user.tenantId, user.id);
+    return json(result, result.documentsCreated > 0 ? 201 : 200);
+  } catch (err) {
+    console.error("Seed demo data:", err);
+    return errJson("INTERNAL_ERROR", "Failed to seed demo data.", 500);
+  }
+}
+
+async function handleClearDemoData(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    if (user.role !== "owner" && user.role !== "admin")
+      return errJson("FORBIDDEN", "Admin access required.", 403);
+
+    const result = await clearDemoData(user.tenantId);
+    return json(result);
+  } catch (err) {
+    console.error("Clear demo data:", err);
+    return errJson("INTERNAL_ERROR", "Failed to clear demo data.", 500);
+  }
+}
+
+async function handleHasDemoData(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const has = await hasDemoData(user.tenantId);
+    return json({ hasDemoData: has });
+  } catch (err) {
+    console.error("Has demo data:", err);
+    return errJson("INTERNAL_ERROR", "Failed.", 500);
+  }
+}
+
 function matchAlertRoute(pathname: string): { handler: string; alertId?: string; action?: string } | null {
   const m = pathname.match(/^\/api\/v1\/alerts\/([^/]+)\/(acknowledge|resolve|dismiss)$/);
   if (m) return { handler: "alertAction", alertId: m[1], action: m[2] };
@@ -1053,6 +1103,9 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/billing/plan" && req.method === "GET") return handleBillingPlan(req);
           if (pathname === "/api/v1/billing/portal" && req.method === "POST") return handleBillingPortal(req);
           if (pathname === "/api/v1/feedback" && req.method === "POST") return handleFeedback(req);
+          if (pathname === "/api/v1/admin/seed-demo-data" && req.method === "POST") return handleSeedDemoData(req);
+          if (pathname === "/api/v1/admin/clear-demo-data" && req.method === "POST") return handleClearDemoData(req);
+          if (pathname === "/api/v1/admin/has-demo-data" && req.method === "GET") return handleHasDemoData(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);

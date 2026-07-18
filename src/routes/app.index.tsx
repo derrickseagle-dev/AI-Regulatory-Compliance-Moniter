@@ -9,6 +9,8 @@ function DashboardHome() {
   const [stats, setStats] = useState<any>(null);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [error, setError] = useState("");
+  const [hasDemo, setHasDemo] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     // Fetch dashboard summary
@@ -22,7 +24,31 @@ function DashboardHome() {
       .then(r => r.json())
       .then(data => setAlerts(data.data || []))
       .catch(() => {});
+
+    // Check if demo data is loaded
+    fetch("/api/v1/admin/has-demo-data")
+      .then(r => r.json())
+      .then(data => setHasDemo(data.hasDemoData))
+      .catch(() => {});
   }, []);
+
+  const handleClearDemo = async () => {
+    setClearing(true);
+    try {
+      await fetch("/api/v1/admin/clear-demo-data", { method: "POST" });
+      setHasDemo(false);
+      // Refresh stats
+      fetch("/api/v1/dashboard/summary")
+        .then(r => r.json())
+        .then(data => setStats(data))
+        .catch(() => {});
+      fetch("/api/v1/alerts?limit=5&sort=-createdAt")
+        .then(r => r.json())
+        .then(data => setAlerts(data.data || []))
+        .catch(() => {});
+    } catch {}
+    setClearing(false);
+  };
 
   // Helper cards even without DB data
   const statCards = stats ? [
@@ -50,6 +76,29 @@ function DashboardHome() {
       {error && (
         <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-400">
           {error}
+        </div>
+      )}
+
+      {/* Demo Data Banner */}
+      {hasDemo && (
+        <div className="rounded-xl border border-indigo-500/30 bg-indigo-600/10 px-5 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-xl">🧪</span>
+            <div>
+              <p className="text-sm font-semibold text-indigo-300">Demo data loaded</p>
+              <p className="text-xs text-gray-400">
+                Sample documents, rules, and alerts have been added to help you explore Regula AI.
+                Clear them anytime when you&apos;re ready to use your own data.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleClearDemo}
+            disabled={clearing}
+            className="shrink-0 rounded-lg border border-indigo-500/30 bg-indigo-600/20 px-4 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-600/40 disabled:opacity-50 transition"
+          >
+            {clearing ? "Clearing…" : "Clear demo data"}
+          </button>
         </div>
       )}
 

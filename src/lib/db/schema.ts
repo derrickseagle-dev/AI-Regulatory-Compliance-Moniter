@@ -85,6 +85,7 @@ export const documents = pgTable("documents", {
   fileSize: integer("file_size"),
   pageCount: integer("page_count"),
   wordCount: integer("word_count"),
+  isDemo: boolean("is_demo").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -110,6 +111,7 @@ export const rules = pgTable("rules", {
   config: jsonb("config").$type<Record<string, unknown>>().default({}).notNull(),
   severity: severityEnum("severity").default("medium").notNull(),
   isActive: boolean("is_active").default(true).notNull(),
+  isDemo: boolean("is_demo").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -149,6 +151,7 @@ export const alerts = pgTable("alerts", {
   confidence: real("confidence").default(0),
   assignedTo: uuid("assigned_to").references(() => users.id),
   chunkIndex: integer("chunk_index"),
+  isDemo: boolean("is_demo").default(false).notNull(),
   acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
   acknowledgedBy: uuid("acknowledged_by").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
