@@ -1,0 +1,7 @@
+{
+  "buildCommand": "bash build-vercel.sh",
+  "outputDirectory": ".vercel/output",
+  "framework": null,
+  "installCommand": "bun install",
+  "regions": ["iad1"]
+}

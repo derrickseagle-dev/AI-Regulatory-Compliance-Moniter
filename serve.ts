@@ -17,6 +17,7 @@ import { RULE_TEMPLATES } from "./src/lib/rules/templates";
 import { checkTierLimit, getUsageStats } from "./src/lib/tiers/index";
 import { generateDailyDigest } from "./src/lib/email/digest";
 import { sendDigestEmail } from "./src/lib/email/sender";
+import { createCheckoutSession, verifyWebhookSignature, extractEventDetails, createBillingPortalSession } from "./src/lib/billing/index";
 import { z } from "zod";
 
 const PORT = 3000;
@@ -726,6 +727,196 @@ async function handleAdminSendDigest(req: Request): Promise<Response> {
   } catch (err) { console.error("Digest:", err); return errJson("INTERNAL_ERROR", "Failed.", 500); }
 }
 
+// ── Billing Handlers ──────────────────────────────────────────
+
+const checkoutSchema = z.object({
+  tier: z.enum(["starter", "professional", "enterprise"]),
+  successUrl: z.string().url(),
+  cancelUrl: z.string().url(),
+});
+
+async function handleBillingCreateCheckout(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const body = await req.json();
+    const p = checkoutSchema.safeParse(body);
+    if (!p.success) return errJson("VALIDATION_ERROR", "Invalid input.", 400);
+
+    const db = getDb();
+    const [tenant] = await db
+      .select({ id: tenants.id, name: tenants.name })
+      .from(tenants)
+      .where(eq(tenants.id, user.tenantId))
+      .limit(1);
+
+    if (!tenant) return errJson("NOT_FOUND", "Tenant not found.", 404);
+
+    const result = await createCheckoutSession({
+      tier: p.data.tier,
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+      userEmail: user.email,
+      successUrl: p.data.successUrl,
+      cancelUrl: p.data.cancelUrl,
+    });
+
+    if (result.error) {
+      return json({ error: result.error, code: result.code }, result.code === "STRIPE_NOT_CONFIGURED" ? 503 : 400);
+    }
+
+    return json({ url: result.url, sessionId: result.sessionId });
+  } catch (err) {
+    console.error("Create checkout:", err);
+    return errJson("INTERNAL_ERROR", "Failed to create checkout session.", 500);
+  }
+}
+
+async function handleBillingWebhook(req: Request): Promise<Response> {
+  try {
+    const signature = req.headers.get("stripe-signature");
+    if (!signature) return errJson("VALIDATION_ERROR", "Missing stripe-signature header.", 400);
+
+    const payload = await req.text();
+    const eventOrError = verifyWebhookSignature(payload, signature);
+
+    if ("error" in eventOrError) {
+      return errJson(eventOrError.code || "WEBHOOK_ERROR", eventOrError.error, 400);
+    }
+
+    const event = eventOrError;
+    const details = extractEventDetails(event);
+    if (!details || !details.customerId) {
+      return json({ received: true, skipped: true, reason: "No customer details extracted." });
+    }
+
+    const db = getDb();
+
+    // Find the tenant by stripe customer ID or by metadata
+    let tenantId: string | null = null;
+
+    // Check if event has metadata with tenantId
+    const metadata = (event.data.object as any)?.metadata;
+    if (metadata?.tenantId) {
+      tenantId = metadata.tenantId;
+    }
+
+    // If no metadata, try to find by stripe customer ID
+    if (!tenantId && details.customerId) {
+      const [t] = await db
+        .select({ id: tenants.id })
+        .from(tenants)
+        .where(eq(tenants.stripeCustomerId, details.customerId))
+        .limit(1);
+      if (t) tenantId = t.id;
+    }
+
+    if (!tenantId) {
+      console.warn("Webhook: could not identify tenant for customer", details.customerId);
+      return json({ received: true, skipped: true, reason: "Unknown customer." });
+    }
+
+    // Update tenant with subscription info
+    const updates: Record<string, any> = {
+      stripeCustomerId: details.customerId,
+      stripeSubscriptionId: details.subscriptionId,
+      subscriptionStatus: details.status,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (details.currentPeriodEnd) {
+      updates.subscriptionPeriodEnd = new Date(details.currentPeriodEnd);
+    }
+
+    // If subscription is active, update tier based on price
+    if (details.status === "active" && details.priceId) {
+      if (details.priceId === process.env.STRIPE_STARTER_PRICE_ID) {
+        updates.tier = "starter";
+      } else if (details.priceId === process.env.STRIPE_PROFESSIONAL_PRICE_ID) {
+        updates.tier = "professional";
+      } else if (details.priceId === process.env.STRIPE_ENTERPRISE_PRICE_ID) {
+        updates.tier = "enterprise";
+      }
+    }
+
+    await db.update(tenants).set(updates).where(eq(tenants.id, tenantId));
+
+    console.log(`Webhook [${event.type}]: updated tenant ${tenantId} — status: ${details.status}`);
+    return json({ received: true, tenantId, status: details.status });
+  } catch (err) {
+    console.error("Webhook:", err);
+    return errJson("INTERNAL_ERROR", "Webhook processing failed.", 500);
+  }
+}
+
+async function handleBillingPlan(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+
+    const db = getDb();
+    const [tenant] = await db
+      .select({
+        tier: tenants.tier,
+        stripeCustomerId: tenants.stripeCustomerId,
+        subscriptionStatus: tenants.subscriptionStatus,
+        subscriptionPeriodEnd: tenants.subscriptionPeriodEnd,
+      })
+      .from(tenants)
+      .where(eq(tenants.id, user.tenantId))
+      .limit(1);
+
+    if (!tenant) return errJson("NOT_FOUND", "Tenant not found.", 404);
+
+    return json({
+      tier: tenant.tier || "starter",
+      stripeCustomerId: tenant.stripeCustomerId,
+      subscriptionStatus: tenant.subscriptionStatus || "inactive",
+      subscriptionPeriodEnd: tenant.subscriptionPeriodEnd
+        ? String(tenant.subscriptionPeriodEnd)
+        : null,
+    });
+  } catch (err) {
+    console.error("Billing plan:", err);
+    return errJson("INTERNAL_ERROR", "Failed.", 500);
+  }
+}
+
+const portalSchema = z.object({
+  returnUrl: z.string().url(),
+});
+
+async function handleBillingPortal(req: Request): Promise<Response> {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return errJson("UNAUTHORIZED", "Authentication required.", 401);
+    const body = await req.json();
+    const p = portalSchema.safeParse(body);
+    if (!p.success) return errJson("VALIDATION_ERROR", "Invalid input.", 400);
+
+    const db = getDb();
+    const [tenant] = await db
+      .select({ stripeCustomerId: tenants.stripeCustomerId })
+      .from(tenants)
+      .where(eq(tenants.id, user.tenantId))
+      .limit(1);
+
+    if (!tenant?.stripeCustomerId) {
+      return errJson("NOT_FOUND", "No Stripe customer found. Start a subscription first.", 404);
+    }
+
+    const result = await createBillingPortalSession(tenant.stripeCustomerId, p.data.returnUrl);
+    if (result.error) {
+      return json({ error: result.error, code: result.code }, result.code === "STRIPE_NOT_CONFIGURED" ? 503 : 400);
+    }
+
+    return json({ url: result.url });
+  } catch (err) {
+    console.error("Billing portal:", err);
+    return errJson("INTERNAL_ERROR", "Failed.", 500);
+  }
+}
+
 // ── Route matching helpers ───────────────────────────────────
 
 function matchAlertRoute(pathname: string): { handler: string; alertId?: string; action?: string } | null {
@@ -765,6 +956,10 @@ for (let attempt = 1; ; attempt++) {
           if (pathname === "/api/v1/me/onboarding" && req.method === "PATCH") return handleOnboarding(req);
           if (pathname === "/api/v1/me/preferences" && req.method === "PATCH") return handlePreferences(req);
           if (pathname === "/api/v1/admin/send-digest" && req.method === "POST") return handleAdminSendDigest(req);
+          if (pathname === "/api/v1/billing/create-checkout" && req.method === "POST") return handleBillingCreateCheckout(req);
+          if (pathname === "/api/v1/billing/webhook" && req.method === "POST") return handleBillingWebhook(req);
+          if (pathname === "/api/v1/billing/plan" && req.method === "GET") return handleBillingPlan(req);
+          if (pathname === "/api/v1/billing/portal" && req.method === "POST") return handleBillingPortal(req);
           const rm = matchRoute(pathname);
           if (rm) {
             if (rm.handler === "ruleTest" && req.method === "POST") return handleRuleTest(req, rm.ruleId!);
