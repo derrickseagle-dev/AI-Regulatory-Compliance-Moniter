@@ -159,6 +159,16 @@ export const alerts = pgTable("alerts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const feedback = pgTable("feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").references(() => tenants.id).notNull(),
+  userId: uuid("user_id").references(() => users.id).notNull(),
+  rating: integer("rating").notNull(), // 1-5 (maps to emoji: 😡😟😐😊😍)
+  message: text("message"),
+  pageUrl: text("page_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const alertGroups = pgTable("alert_groups", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id").references(() => tenants.id).notNull(),
