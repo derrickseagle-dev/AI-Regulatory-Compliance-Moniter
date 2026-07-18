@@ -76,4 +76,40 @@ export const auditEvents = {
       payload,
     });
   },
+
+  ruleCreated(
+    tenantId: string,
+    ruleId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "rule.created",
+        resourceType: "rule",
+        resourceId: ruleId,
+        payload,
+      },
+      user,
+    );
+  },
+
+  ruleUpdated(
+    tenantId: string,
+    ruleId: string,
+    payload: Record<string, unknown>,
+    user?: SessionUser,
+  ) {
+    return writeAuditEntry(
+      {
+        tenantId,
+        eventType: "rule.updated",
+        resourceType: "rule",
+        resourceId: ruleId,
+        payload,
+      },
+      user,
+    );
+  },
 };

@@ -35,6 +35,7 @@ function AppShell() {
   const navItems = [
     { label: "Dashboard", href: "/app" },
     { label: "Documents", href: "/app/documents" },
+    { label: "Rules", href: "/app/rules" },
   ];
 
   return (
