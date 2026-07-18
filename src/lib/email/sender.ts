@@ -16,7 +16,7 @@ export interface EmailLogEntry {
   status: "logged";
 }
 
-const LOG_DIR = join(process.cwd(), "data", "site", "data");
+const LOG_DIR = join("/home/team/shared/site/data");
 const LOG_FILE = join(LOG_DIR, "email-log.json");
 
 function ensureLogFile(): void {
